@@ -5,31 +5,90 @@
 #include "mailbox.h"
 #include "server.h"
 #include "status_window.h"
+#include "stream.h"
+#ifdef GRIMACE_PLATFORM_BRAIN
+#include "brain_device.h"
+#include "usb_function.h"
+#endif
 
 namespace {
 
 constexpr const wchar_t *settings_key = L"Software\\debugmgr";
 constexpr const wchar_t *transport_value = L"Transport";
-constexpr const wchar_t *mailbox_transport = L"mailbox";
 constexpr const wchar_t *instance_mutex_name = L"debugmgr";
 constexpr DWORD handover_wait_milliseconds = 10000;
+constexpr DWORD stream_retry_milliseconds = 1000;
 
-bool registry_selects_mailbox() {
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, settings_key, 0, 0, &key) != ERROR_SUCCESS) {
-        return false;
+struct selection {
+    debugmgr::transport_kind kind = debugmgr::transport_kind::network;
+    uint16_t port = debugmgr::default_port;
+    grimace::wstring<32> stream;
+    bool chosen = false;
+#ifdef GRIMACE_PLATFORM_BRAIN
+    debugmgr::usb_mode usb = debugmgr::usb_mode::none;
+#endif
+};
+
+void choose(selection &chosen, const wchar_t *word) {
+    long number = _wtol(word);
+    if (number > 0 && number < 65536) {
+        chosen.kind = debugmgr::transport_kind::network;
+        chosen.port = static_cast<uint16_t>(number);
+    } else if (!_wcsicmp(word, L"network")) {
+        chosen.kind = debugmgr::transport_kind::network;
+    } else if (!_wcsicmp(word, L"mailbox")) {
+        chosen.kind = debugmgr::transport_kind::mailbox;
+    } else if (!_wcsnicmp(word, L"stream=", 7) && word[7]) {
+        chosen.kind = debugmgr::transport_kind::stream;
+        chosen.stream = word + 7;
+    } else {
+#ifdef GRIMACE_PLATFORM_BRAIN
+        debugmgr::usb_mode usb = debugmgr::usb_mode_named(word);
+        if (usb == debugmgr::usb_mode::none) {
+            return;
+        }
+        chosen.usb = usb;
+#else
+        return;
+#endif
     }
-    wchar_t value[16] = {};
-    DWORD type = 0;
-    DWORD size = sizeof(value) - sizeof(wchar_t);
-    bool selected = RegQueryValueExW(key, transport_value, nullptr, &type, reinterpret_cast<BYTE *>(value), &size) == ERROR_SUCCESS &&
-                    type == REG_SZ && _wcsicmp(value, mailbox_transport) == 0;
-    RegCloseKey(key);
-    return selected;
+    chosen.chosen = true;
 }
 
-bool command_line_selects_mailbox(const wchar_t *command_line) {
-    return wcsstr(command_line, mailbox_transport) != nullptr;
+void choose_all(selection &chosen, const wchar_t *words) {
+    wchar_t word[48];
+    while (*words) {
+        while (*words == L' ') {
+            words++;
+        }
+        int length = 0;
+        while (words[length] && words[length] != L' ' && length < 47) {
+            word[length] = words[length];
+            length++;
+        }
+        word[length] = 0;
+        if (length) {
+            choose(chosen, word);
+        }
+        words += length;
+        while (*words && *words != L' ') {
+            words++;
+        }
+    }
+}
+
+void choose_from_registry(selection &chosen) {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, settings_key, 0, 0, &key) != ERROR_SUCCESS) {
+        return;
+    }
+    wchar_t value[64] = {};
+    DWORD type = 0;
+    DWORD size = sizeof(value) - sizeof(wchar_t);
+    if (RegQueryValueExW(key, transport_value, nullptr, &type, reinterpret_cast<BYTE *>(value), &size) == ERROR_SUCCESS && type == REG_SZ) {
+        choose_all(chosen, value);
+    }
+    RegCloseKey(key);
 }
 
 bool become_only_instance(HANDLE instance_lock) {
@@ -45,8 +104,7 @@ bool become_only_instance(HANDLE instance_lock) {
 struct server_context {
     debugmgr::shared_status *status;
     HWND window;
-    uint16_t port;
-    bool mailbox;
+    selection chosen;
 };
 
 void record(void *context, const debugmgr::report &happened) {
@@ -87,11 +145,48 @@ void record(void *context, const debugmgr::report &happened) {
     PostMessageW(server.window, debugmgr::status_changed, 0, 0);
 }
 
+bool serve_stream_device(server_context &server, debugmgr::device &device) {
+    for (;;) {
+        HANDLE stream = CreateFileW(server.chosen.stream.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (stream == INVALID_HANDLE_VALUE) {
+            Sleep(stream_retry_milliseconds);
+            continue;
+        }
+        debugmgr::stream_result result = debugmgr::serve_stream(stream, device, _WIN32_WCE, record, &server);
+        CloseHandle(stream);
+        if (result == debugmgr::stream_result::quit) {
+            return true;
+        }
+        Sleep(stream_retry_milliseconds);
+    }
+}
+
 DWORD WINAPI run_server(void *parameter) {
     server_context &server = *static_cast<server_context *>(parameter);
+#ifdef GRIMACE_PLATFORM_BRAIN
+    debugmgr::brain_device device;
+    if (server.chosen.usb != debugmgr::usb_mode::none) {
+        debugmgr::usb_session session{server.chosen.usb, server.status, server.window, record, &server};
+        if (debugmgr::serve_usb(session, device, _WIN32_WCE)) {
+            PostMessageW(server.window, debugmgr::stop_requested, 0, 0);
+        }
+        return 0;
+    }
+#else
     debugmgr::ce_device device;
-    bool finished = server.mailbox ? debugmgr::serve_mailbox(device, _WIN32_WCE, record, &server)
-                                   : debugmgr::serve(server.port, device, _WIN32_WCE, record, &server);
+#endif
+    bool finished = false;
+    switch (server.chosen.kind) {
+    case debugmgr::transport_kind::network:
+        finished = debugmgr::serve(server.chosen.port, device, _WIN32_WCE, record, &server);
+        break;
+    case debugmgr::transport_kind::mailbox:
+        finished = debugmgr::serve_mailbox(device, _WIN32_WCE, record, &server);
+        break;
+    case debugmgr::transport_kind::stream:
+        finished = serve_stream_device(server, device);
+        break;
+    }
     if (finished) {
         PostMessageW(server.window, debugmgr::stop_requested, 0, 0);
     }
@@ -101,9 +196,16 @@ DWORD WINAPI run_server(void *parameter) {
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, int show) {
-    bool mailbox = command_line_selects_mailbox(command_line) || registry_selects_mailbox();
-    long requested_port = _wtol(command_line);
-    uint16_t port = requested_port > 0 && requested_port < 65536 ? static_cast<uint16_t>(requested_port) : debugmgr::default_port;
+    selection chosen;
+    choose_all(chosen, command_line);
+    if (!chosen.chosen) {
+        choose_from_registry(chosen);
+    }
+#ifdef GRIMACE_PLATFORM_BRAIN
+    if (!chosen.chosen) {
+        chosen.usb = debugmgr::usb_mode::sharp_serial;
+    }
+#endif
 
     HANDLE instance_lock = CreateMutexW(nullptr, FALSE, instance_mutex_name);
     if (!instance_lock || !become_only_instance(instance_lock)) {
@@ -118,18 +220,29 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
 
     debugmgr::shared_status status;
     InitializeCriticalSection(&status.lock);
-    debugmgr::status_window window(status, port, mailbox);
+    status.state.transport = chosen.kind;
+    status.state.port = chosen.port;
+    status.state.stream = chosen.stream;
+    debugmgr::status_window window(status);
     if (!window.open(instance)) {
         return 1;
     }
 
-    server_context server{&status, window.handle(), port, mailbox};
+    server_context server{&status, window.handle(), chosen};
     HANDLE thread = CreateThread(nullptr, 0, run_server, &server, 0, nullptr);
     if (!thread) {
         return 1;
     }
     CloseHandle(thread);
     int result = grimace::run_message_loop();
+#ifdef GRIMACE_PLATFORM_BRAIN
+    if (chosen.usb != debugmgr::usb_mode::none) {
+        EnterCriticalSection(&status.lock);
+        debugmgr::status_snapshot final_state = status.state;
+        LeaveCriticalSection(&status.lock);
+        debugmgr::usb_stopped(final_state);
+    }
+#endif
     WSACleanup();
     return result;
 }

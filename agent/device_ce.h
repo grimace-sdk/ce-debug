@@ -7,6 +7,8 @@
 
 namespace debugmgr {
 
+uint32_t write_bitmap(const std::u16string &path, const BITMAPINFOHEADER &info, const void *pixels, DWORD image_bytes);
+
 class ce_device : public device {
 public:
     ~ce_device() override;

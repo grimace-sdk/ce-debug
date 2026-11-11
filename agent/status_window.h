@@ -9,7 +9,15 @@
 
 namespace debugmgr {
 
+enum class transport_kind { network, mailbox, stream };
+
 struct status_snapshot {
+    transport_kind transport = transport_kind::network;
+    uint16_t port = 0;
+    grimace::wstring<32> stream;
+    grimace::wstring<48> mode;
+    grimace::wstring<128> note;
+    bool stop_restores_storage = false;
     bool listening = false;
     bool failed = false;
     bool connected = false;
@@ -42,7 +50,7 @@ public:
         return GetSysColorBrush(COLOR_BTNFACE);
     }
 
-    status_window(shared_status &status, uint16_t port, bool mailbox) : status(status), port(port), mailbox(mailbox) {}
+    explicit status_window(shared_status &status) : status(status) {}
 
     bool open(HINSTANCE instance);
     bool on_create();
@@ -74,8 +82,6 @@ private:
     void stop();
 
     shared_status &status;
-    uint16_t port;
-    bool mailbox;
     bool pocket = false;
     bool side_by_side = false;
     HINSTANCE instance = nullptr;
@@ -98,6 +104,7 @@ private:
     tray_state shown_tray_state = tray_state::idle;
     grimace::wstring<80> shown_tip;
     DWORD last_keep_awake = 0;
+    HANDLE power_off_disabled = nullptr;
 };
 
 }

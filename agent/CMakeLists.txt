@@ -1,5 +1,9 @@
 if(GRIMACE_WIN32_WCE GREATER_EQUAL 300)
-    grimace_add_executable(debugmgr main.cpp status_window.cpp protocol.cpp server.cpp mailbox.cpp device_ce.cpp
+    set(sources main.cpp status_window.cpp protocol.cpp server.cpp stream.cpp mailbox.cpp device_ce.cpp)
+    if(GRIMACE_PLATFORM STREQUAL "brain")
+        list(APPEND sources brain_device.cpp usb_function.cpp ../usbfn/activate.c)
+    endif()
+    grimace_add_executable(debugmgr ${sources}
         RESOURCES debugmgr.rc ../assets/debugmgr.ico ../assets/tray-idle.ico ../assets/tray-connected.ico ../assets/tray-active.ico)
     target_link_libraries(debugmgr PRIVATE grimace::winsock)
 elseif(GRIMACE_ARCH STREQUAL "x86")

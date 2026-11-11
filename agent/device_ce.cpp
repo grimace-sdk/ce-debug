@@ -34,6 +34,8 @@ void put_u32(uint8_t *bytes, uint32_t value) {
     put_u16(bytes + 2, static_cast<uint16_t>(value >> 16));
 }
 
+}
+
 uint32_t write_bitmap(const std::u16string &path, const BITMAPINFOHEADER &info, const void *pixels, DWORD image_bytes) {
     uint8_t file_header[bitmap_file_header_size] = {'B', 'M'};
     DWORD pixel_offset = bitmap_file_header_size + sizeof(info);
@@ -49,8 +51,6 @@ uint32_t write_bitmap(const std::u16string &path, const BITMAPINFOHEADER &info, 
     uint32_t status = ok ? status_ok : last_error();
     CloseHandle(file);
     return status;
-}
-
 }
 
 ce_device::~ce_device() {

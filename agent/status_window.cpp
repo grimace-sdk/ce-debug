@@ -40,6 +40,8 @@ constexpr const wchar_t *power_events[] = {
     L"PowerManager/ActivityTimer/EdSystemActivity",
     L"PowerManager/EdPowerTimerReset",
 };
+constexpr const wchar_t *disable_power_off_event = L"PowerManager/EdDisablePowerOff";
+constexpr const wchar_t *rndis_address_key = L"Comm\\RndisFn1\\Parms\\TcpIp";
 
 constexpr DWORD empty_menu_bar = 0x0001;
 
@@ -63,14 +65,33 @@ grimace::wstring<48> dotted(uint32_t address) {
     return grimace::format<48>(L"%u.%u.%u.%u", address >> 24, (address >> 16) & 0xFF, (address >> 8) & 0xFF, address & 0xFF);
 }
 
+grimace::wstring<32> rndis_address() {
+    grimace::wstring<32> result;
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, rndis_address_key, 0, 0, &key) != ERROR_SUCCESS) {
+        return result;
+    }
+    wchar_t address[64] = {};
+    DWORD size = sizeof(address) - sizeof(wchar_t) * 2;
+    DWORD type = 0;
+    bool found = RegQueryValueExW(key, L"DhcpIPAddress", nullptr, &type, reinterpret_cast<BYTE *>(address), &size) == ERROR_SUCCESS &&
+                 (type == REG_MULTI_SZ || type == REG_SZ) && address[0] && lstrcmpW(address, L"0.0.0.0");
+    RegCloseKey(key);
+    if (found) {
+        result = address;
+    }
+    return result;
+}
+
 grimace::wstring<96> local_addresses(uint16_t port) {
     grimace::wstring<96> result;
     char name[64];
-    if (gethostname(name, sizeof(name)) != 0) {
-        return result;
-    }
-    hostent *host = gethostbyname(name);
+    hostent *host = gethostname(name, sizeof(name)) == 0 ? gethostbyname(name) : nullptr;
     if (!host) {
+        grimace::wstring<32> rndis = rndis_address();
+        if (!rndis.empty()) {
+            result = grimace::format<96>(L"%s:%u", rndis, static_cast<unsigned>(port));
+        }
         return result;
     }
     for (int index = 0; host->h_addr_list[index]; index++) {
@@ -178,10 +199,7 @@ bool status_window::open(HINSTANCE program) {
 bool status_window::on_create() {
     explanation = create_control(L"STATIC", L"Starting...", SS_LEFT | SS_NOPREFIX, 0);
     SendMessageW(explanation, WM_SETFONT, reinterpret_cast<WPARAM>(bold_font.get()), FALSE);
-    warning = create_control(L"STATIC",
-                             mailbox ? L"Requests come from the emulator."
-                                     : L"Anything that can reach this port can copy files to this device and run programs.",
-                             SS_LEFT | SS_NOPREFIX, 0);
+    warning = create_control(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 0);
     connection_group = create_control(L"BUTTON", L"Connection", BS_GROUPBOX, 0);
     activity_group = create_control(L"BUTTON", L"Activity", BS_GROUPBOX, 0);
     for (int index = 0; index < field_count; index++) {
@@ -192,7 +210,10 @@ bool status_window::on_create() {
     hide_button = create_control(L"BUTTON", L"Hide", BS_PUSHBUTTON | WS_TABSTOP, hide_button_id);
     SetWindowPos(connection_group, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowPos(activity_group, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    addresses = local_addresses(port);
+    status_snapshot now = snapshot();
+    if (now.transport == transport_kind::network) {
+        addresses = local_addresses(now.port);
+    }
     SetTimer(handle(), refresh_timer, refresh_milliseconds, nullptr);
     SetTimer(handle(), address_timer, address_refresh_milliseconds, nullptr);
     return true;
@@ -225,7 +246,8 @@ bool status_window::on_message(UINT message, WPARAM wparam, LPARAM lparam, LRESU
             return true;
         }
         if (wparam == address_timer) {
-            grimace::wstring<96> refreshed = local_addresses(port);
+            status_snapshot now = snapshot();
+            grimace::wstring<96> refreshed = now.transport == transport_kind::network ? local_addresses(now.port) : grimace::wstring<96>();
             if (refreshed.view() != addresses.view()) {
                 addresses = refreshed;
                 refresh();
@@ -254,6 +276,11 @@ void status_window::on_destroy() {
     KillTimer(handle(), refresh_timer);
     KillTimer(handle(), address_timer);
     remove_tray();
+    if (power_off_disabled) {
+        ResetEvent(power_off_disabled);
+        CloseHandle(power_off_disabled);
+        power_off_disabled = nullptr;
+    }
     PostQuitMessage(0);
 }
 
@@ -363,7 +390,9 @@ int status_window::layout(int width) {
         int bottom = client_rect().bottom - gap - button_height;
         top = bottom > top ? bottom : top;
     }
-    int stop_width = text_width(L"Stop") + gap * 6;
+    wchar_t stop_text[48];
+    GetWindowTextW(stop_button, stop_text, 48);
+    int stop_width = text_width(stop_text) + gap * 6;
     int hide_width = text_width(L"Hide") + gap * 6;
     MoveWindow(stop_button, gap, top, stop_width, button_height, TRUE);
     MoveWindow(hide_button, width - gap - hide_width, top, hide_width, button_height, TRUE);
@@ -420,12 +449,19 @@ status_snapshot status_window::snapshot() const {
 void status_window::refresh() {
     status_snapshot now = snapshot();
     DWORD tick = GetTickCount();
+    bool network = now.transport == transport_kind::network;
+    bool mailbox = now.transport == transport_kind::mailbox;
     grimace::wstring<160> headline;
-    if (mailbox) {
+    if (!now.note.empty()) {
+        headline = now.note.c_str();
+    } else if (mailbox) {
         headline = now.failed ? grimace::wstring<160>(L"No emulator host mailbox: run on the emulator, or without \"mailbox\".")
                               : grimace::wstring<160>(L"Serving the emulator's host mailbox.");
+    } else if (!network) {
+        headline = now.connected ? grimace::format<160>(L"Serving %s. Connect with ce-debug.", now.stream)
+                                 : grimace::format<160>(L"Waiting for %s...", now.stream);
     } else if (now.failed) {
-        headline = grimace::format<160>(L"Port %u is in use. Waiting for it...", static_cast<unsigned>(port));
+        headline = grimace::format<160>(L"Port %u is in use. Waiting for it...", static_cast<unsigned>(now.port));
     } else if (now.connected) {
         headline = grimace::format<160>(L"%s is connected.", dotted(now.client));
     } else if (addresses.empty()) {
@@ -434,17 +470,33 @@ void status_window::refresh() {
         headline = L"Ready. Connect with ce-debug.";
     }
     set_text_if_changed(explanation, headline.c_str());
+    set_text_if_changed(warning, mailbox   ? L"Requests come from the emulator."
+                                 : network ? L"Anything that can reach this port can copy files to this device and run programs."
+                                           : L"Anything connected to this port can copy files to this device and run programs.");
+    set_text_if_changed(stop_button, now.stop_restores_storage ? L"Stop and Switch USB to Storage" : L"Stop");
 
     grimace::wstring<128> fields[field_count];
-    fields[0] = mailbox ? L"Emulator mailbox" : L"Network";
+    if (!now.mode.empty()) {
+        fields[0] = now.mode.c_str();
+    } else {
+        fields[0] = mailbox ? L"Emulator mailbox" : network ? L"Network" : L"Serial";
+    }
     if (mailbox) {
         fields[1] = L"-";
+    } else if (!network) {
+        fields[1] = now.stream.c_str();
     } else if (addresses.empty()) {
-        fields[1] = grimace::format<128>(L"Port %u, no address yet", static_cast<unsigned>(port));
+        fields[1] = grimace::format<128>(L"Port %u, no address yet", static_cast<unsigned>(now.port));
     } else {
         fields[1] = addresses.c_str();
     }
-    fields[2] = mailbox ? grimace::wstring<128>(L"Emulator") : now.connected ? grimace::wstring<128>(dotted(now.client).c_str()) : grimace::wstring<128>(L"None");
+    if (mailbox) {
+        fields[2] = L"Emulator";
+    } else if (!now.connected) {
+        fields[2] = L"None";
+    } else {
+        fields[2] = network ? grimace::wstring<128>(dotted(now.client).c_str()) : grimace::wstring<128>(L"Cable");
+    }
     fields[3] = now.connected ? grimace::wstring<128>(duration(tick - now.connected_tick).c_str()) : grimace::wstring<128>(L"-");
     if (now.requests) {
         fields[4] = now.last_status == status_ok
@@ -467,11 +519,12 @@ void status_window::refresh() {
 void status_window::update_tray(const status_snapshot &now) {
     DWORD tick = GetTickCount();
     tray_state state = tray_state::idle;
-    if (now.connected || (mailbox && now.listening)) {
+    if (now.connected || (now.transport == transport_kind::mailbox && now.listening)) {
         state = now.requests && tick - now.last_request_tick < active_milliseconds ? tray_state::active : tray_state::connected;
     }
-    grimace::wstring<80> tip = now.connected ? grimace::format<80>(L"debugmgr: %s connected", dotted(now.client))
-                                             : grimace::wstring<80>(L"debugmgr: waiting");
+    grimace::wstring<80> tip = !now.connected                                  ? grimace::wstring<80>(L"debugmgr: waiting")
+                               : now.transport == transport_kind::network ? grimace::format<80>(L"debugmgr: %s connected", dotted(now.client))
+                                                                           : grimace::format<80>(L"debugmgr: connected on %s", now.stream);
     if (tray_added && state == shown_tray_state && tip.view() == shown_tip.view()) {
         return;
     }
@@ -513,6 +566,11 @@ void status_window::remove_tray() {
 void status_window::keep_awake(const status_snapshot &now) {
     DWORD tick = GetTickCount();
     if (!now.requests || tick - now.last_request_tick >= in_use_milliseconds) {
+        if (power_off_disabled) {
+            ResetEvent(power_off_disabled);
+            CloseHandle(power_off_disabled);
+            power_off_disabled = nullptr;
+        }
         return;
     }
     if (last_keep_awake && tick - last_keep_awake < keep_awake_milliseconds) {
@@ -526,6 +584,12 @@ void status_window::keep_awake(const status_snapshot &now) {
             SetEvent(event);
             CloseHandle(event);
         }
+    }
+    if (!power_off_disabled) {
+        power_off_disabled = CreateEventW(nullptr, TRUE, FALSE, disable_power_off_event);
+    }
+    if (power_off_disabled) {
+        SetEvent(power_off_disabled);
     }
 }
 
