@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GRIMACE_COMMIT: 9b89e403873b62764aab4f5754a345763566bc77
+      LLVM_RELEASE: v3
+      LLVM_NAME: velo-llvm-v3-linux-x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: grimace-sdk/grimace
+          ref: ${{ env.GRIMACE_COMMIT }}
+          path: grimace
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Download the Windows CE LLVM
+        run: |
+          url=https://github.com/grimace-sdk/llvm-builds/releases/download/$LLVM_RELEASE
+          curl -fsSLO $url/$LLVM_NAME.tar.xz
+          curl -fsSLO $url/$LLVM_NAME.tar.xz.sha256
+          sha256sum -c $LLVM_NAME.tar.xz.sha256
+          tar xf $LLVM_NAME.tar.xz -C "$RUNNER_TEMP"
+          echo "GRIMACE_LLVM_ROOT=$RUNNER_TEMP/$LLVM_NAME" >> "$GITHUB_ENV"
+
+      - name: Build every target and run the checks, with no warnings
+        run: |
+          make all check GRIMACE="$GITHUB_WORKSPACE/grimace" 2>&1 | tee build.log
+          test ${PIPESTATUS[0]} -eq 0
+          ! grep -i "warning:" build.log
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ce-debug
+          path: |
+            build/*/agent/*.exe
+            build/arm-ce6-brain/usbfn/*.exe
+            build/arm-ce6-brain/usbfn/*.dll

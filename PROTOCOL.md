@@ -1,18 +1,25 @@
 # debugmgr protocol
 
-debugmgr reads requests and sends one reply to each. On CE 3.0 (`debugmgr/*.cpp`) it uses one of two transports:
+debugmgr reads requests and sends one reply to each. On CE 3.0 and later (`agent/*.cpp`) it uses one of these transports:
 
 - TCP, by default: it listens on port 2100 (or the port given on its command line) and serves one connection at a time. A new
   connection replaces the current one, and one with no request for 120 seconds is closed. If the port is in use, it retries every
   second. Each message is framed as a u32 little-endian length followed by the message. A request longer than the maximum message
   size closes the connection.
-- An emulator's host mailbox, when the command line contains `mailbox` or the registry value `HKLM\Software\debugmgr\Transport`
-  is the string `mailbox`. debugmgr calls the emulator with `swi 0x0051CE` in ARM state: r0 = operation (0 probe, 1 receive,
+- A stream device such as a serial port, with `stream=DEVICE` (for example `stream=COM1:`). Messages are framed as for TCP.
+  debugmgr opens the device again if it goes away.
+- On a Sharp Brain, its USB: Sharp's USB serial client (`usb`, the default there), `usbserial.dll` (`cdc`), or the RNDIS network
+  (`rndis`, serving TCP; after 2 minutes with no connection it falls back to `usb`). `auto` picks `rndis` when USB networking is
+  already on, otherwise `usb`.
+- An emulator's host mailbox, with `mailbox`. debugmgr calls the emulator with `swi 0x0051CE` in ARM state: r0 = operation (0 probe, 1 receive,
   2 send), r1 = buffer, r2 = length; the result is in r0, and probe also returns the maximum message size in r1. Receive returns
   0 when nothing is waiting, and debugmgr sleeps 10 ms. The emulator frames messages on its `--agent` socket as above. On real
   hardware the SWI would end debugmgr, so it's only used when selected.
 
-On CE 1.0 and 2.0 (`debugmgr/debugmgr.c`) it uses velo-emu's host mailbox only, which delivers each message whole, framed on
+The transport comes from the command line, or else from the registry string `HKLM\Software\debugmgr\Transport`, as
+space-separated words: a port number, `network`, `stream=DEVICE`, `mailbox`, and on the Brain `usb`, `cdc`, `rndis` or `auto`.
+
+On CE 1.0 and 2.0 (`agent/debugmgr.c`) it uses velo-emu's host mailbox only, which delivers each message whole, framed on
 its `--agent` socket as above.
 
 All integers are little-endian. Strings are a u16 count of UTF-16 code units followed by that many UTF-16LE code units, with no
@@ -68,9 +75,10 @@ of a program that has already exited also returns 0. On CE 2.0, KILL waits up to
 
 LIST stops early if the reply would exceed the maximum message size.
 
-SCREENSHOT writes the screen to path as a bottom-up 24-bit BMP. Fetch it with READ and remove it with DELETE.
+SCREENSHOT writes the screen to path as a bottom-up 24-bit BMP. Fetch it with READ and remove it with DELETE. On the Brain it reads
+the framebuffer through `board.dll` when that driver supports it, so it works while a program holds the display.
 
-This is grimace's debugmgr protocol, version 1.
+This is the debugmgr protocol, version 1.
 
 ## GDB's file and run requests
 
