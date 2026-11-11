@@ -1,8 +1,3 @@
-cmake_minimum_required(VERSION 3.20)
-project(debugmgr C CXX)
-
-include(Grimace)
-
 if(GRIMACE_WIN32_WCE GREATER_EQUAL 300)
     grimace_add_executable(debugmgr main.cpp status_window.cpp protocol.cpp server.cpp mailbox.cpp device_ce.cpp
         RESOURCES debugmgr.rc ../assets/debugmgr.ico ../assets/tray-idle.ico ../assets/tray-connected.ico ../assets/tray-active.ico)
