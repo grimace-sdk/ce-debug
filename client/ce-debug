@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import socket
+import struct
+import sys
+
+COMMAND_PING = 1
+COMMAND_WRITE = 2
+COMMAND_READ = 3
+COMMAND_RUN = 4
+COMMAND_KILL = 5
+COMMAND_LIST = 6
+COMMAND_DELETE = 7
+COMMAND_MAKE_DIRECTORY = 8
+COMMAND_REMOVE_DIRECTORY = 9
+COMMAND_MOVE = 10
+COMMAND_QUIT = 11
+COMMAND_HANDOVER = 12
+REPLY_FLAG = 0x8000
+REPLY_HEADER_SIZE = 8
+WRITE_CREATE = 0x1
+CLIENT_SEQUENCES = 0x7FFF
+FILE_ATTRIBUTE_DIRECTORY = 0x10
+AGENT_ERRORS = {
+    0x20000001: "unknown command",
+    0x20000002: "malformed request",
+    0x20000003: "no such process",
+    0x20000005: "still running 5 seconds after being told to end",
+}
+WINDOWS_ERRORS = {2: "file not found", 3: "path not found", 5: "access denied", 80: "file exists", 112: "disk full", 183: "already exists"}
+
+
+class AgentError(Exception):
+    pass
+
+
+def command_line(arguments):
+    return " ".join('"%s"' % argument if (" " in argument or "\t" in argument) and '"' not in argument else argument for argument in arguments)
+
+
+def ce_path(path):
+    path = path.replace("/", "\\")
+    return path if path.startswith("\\") else "\\" + path
+
+
+def encode_string(text):
+    encoded = text.encode("utf-16-le")
+    return struct.pack("<H", len(encoded) // 2) + encoded
+
+
+def decode_string(data, position):
+    count = struct.unpack_from("<H", data, position)[0]
+    start = position + 2
+    return data[start:start + count * 2].decode("utf-16-le"), start + count * 2
+
+
+DEFAULT_PORT = 2100
+
+
+def device_address(text):
+    host, _, port = text.rpartition(":") if ":" in text else (text, "", "")
+    return host, int(port) if port else DEFAULT_PORT
+
+
+class Agent:
+    def __init__(self, timeout, device=None, socket_path=None):
+        if socket_path:
+            self.connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.connection.settimeout(timeout)
+            self.connection.connect(socket_path)
+        else:
+            self.connection = socket.create_connection(device_address(device), timeout=timeout)
+            self.connection.settimeout(timeout)
+        self.sequence = 0
+        self.capacity = 256
+        _, self.capacity, self.version = self.ping()
+
+    def receive_exactly(self, length):
+        data = bytearray()
+        while len(data) < length:
+            chunk = self.connection.recv(length - len(data))
+            if not chunk:
+                raise AgentError("the connection closed")
+            data += chunk
+        return bytes(data)
+
+    def request(self, command, payload=b""):
+        self.sequence = self.sequence % CLIENT_SEQUENCES + 1
+        message = struct.pack("<HH", command, self.sequence) + payload
+        if len(message) > self.capacity:
+            raise AgentError("request of %d bytes is bigger than debugmgr's %d" % (len(message), self.capacity))
+        self.connection.sendall(struct.pack("<I", len(message)) + message)
+        while True:
+            length = struct.unpack("<I", self.receive_exactly(4))[0]
+            reply = self.receive_exactly(length)
+            kind, sequence, status = struct.unpack_from("<HHI", reply)
+            if kind == command | REPLY_FLAG and sequence == self.sequence:
+                break
+        if status:
+            raise AgentError(AGENT_ERRORS.get(status) or WINDOWS_ERRORS.get(status) or "Windows error %d" % status)
+        return reply[REPLY_HEADER_SIZE:]
+
+    def ping(self):
+        return struct.unpack("<III", self.request(COMMAND_PING)[:12])
+
+    def put(self, local, remote):
+        data = open(local, "rb").read()
+        path = encode_string(ce_path(remote))
+        chunk = self.capacity - 12 - len(path)
+        offset = 0
+        while True:
+            flags = WRITE_CREATE if offset == 0 else 0
+            self.request(COMMAND_WRITE, struct.pack("<II", offset, flags) + path + data[offset:offset + chunk])
+            offset += chunk
+            if offset >= len(data):
+                return len(data)
+
+    def get(self, remote, local):
+        path = encode_string(ce_path(remote))
+        chunk = self.capacity - REPLY_HEADER_SIZE - 4
+        data = bytearray()
+        while True:
+            reply = self.request(COMMAND_READ, struct.pack("<II", len(data), chunk) + path)
+            size = struct.unpack_from("<I", reply)[0]
+            data += reply[4:]
+            if len(data) >= size or len(reply) == 4:
+                break
+        open(local, "wb").write(data)
+        return len(data)
+
+    def run(self, program, arguments, command=COMMAND_RUN):
+        reply = self.request(command, encode_string(ce_path(program)) + encode_string(arguments))
+        return struct.unpack_from("<I", reply)[0]
+
+    def handover(self, program, arguments=""):
+        return self.run(program, arguments, COMMAND_HANDOVER)
+
+    def kill(self, process):
+        self.request(COMMAND_KILL, struct.pack("<I", process))
+
+    def list(self, folder):
+        path = ce_path(folder)
+        pattern = path if "*" in path or "?" in path else path.rstrip("\\") + "\\*"
+        reply = self.request(COMMAND_LIST, encode_string(pattern))
+        count = struct.unpack_from("<I", reply)[0]
+        position = 4
+        entries = []
+        for _ in range(count):
+            attributes, size = struct.unpack_from("<II", reply, position)
+            name, position = decode_string(reply, position + 8)
+            entries.append((name, attributes, size))
+        return entries
+
+    def path_command(self, command, *paths):
+        self.request(command, b"".join(encode_string(ce_path(path)) for path in paths))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Talk to debugmgr.exe on a Windows CE device over TCP, or in an emulator through its agent socket")
+    parser.add_argument("--device", default=os.environ.get("CE_DEBUG_DEVICE"),
+                        help="the device's address, host[:port] (port %d if not given), default $CE_DEBUG_DEVICE" % DEFAULT_PORT)
+    parser.add_argument("--socket", default=os.environ.get("CE_DEBUG_SOCKET"),
+                        help="an emulator's --agent socket, for debugmgr on its host mailbox, default $CE_DEBUG_SOCKET")
+    parser.add_argument("--timeout", type=float, default=30, help="seconds to wait for each reply")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("ping", help="check debugmgr is running")
+    command = commands.add_parser("put", help="copy a file to the device")
+    command.add_argument("local")
+    command.add_argument("remote")
+    command = commands.add_parser("get", help="copy a file from the device")
+    command.add_argument("remote")
+    command.add_argument("local")
+    command = commands.add_parser("run", help="start a program and print its process ID")
+    command.add_argument("program")
+    command.add_argument("arguments", nargs=argparse.REMAINDER)
+    command = commands.add_parser("kill", help="end a program started with run")
+    command.add_argument("process", type=lambda text: int(text, 0))
+    command = commands.add_parser("ls", help="list a folder, or the files matching a pattern such as /Windows/*.exe")
+    command.add_argument("folder", nargs="?", default="\\")
+    for name, help_text in (("rm", "delete a file"), ("mkdir", "create a folder"), ("rmdir", "remove a folder")):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("path")
+    command = commands.add_parser("mv", help="move or rename")
+    command.add_argument("source")
+    command.add_argument("destination")
+    commands.add_parser("quit", help="stop debugmgr")
+    command = commands.add_parser("handover", help="start another debugmgr, then stop this one")
+    command.add_argument("program")
+    command.add_argument("arguments", nargs=argparse.REMAINDER)
+    arguments = parser.parse_args()
+    if not arguments.device and not arguments.socket:
+        sys.exit("no device: pass --device or --socket, or set CE_DEBUG_DEVICE or CE_DEBUG_SOCKET")
+    try:
+        agent = Agent(arguments.timeout, device=None if arguments.socket else arguments.device, socket_path=arguments.socket)
+        if arguments.command == "ping":
+            print("debugmgr protocol %d, CE %d.%02d, %d byte messages" % (agent.ping()[0], agent.version // 100, agent.version % 100, agent.capacity))
+        elif arguments.command == "put":
+            print("%d bytes" % agent.put(arguments.local, arguments.remote))
+        elif arguments.command == "get":
+            print("%d bytes" % agent.get(arguments.remote, arguments.local))
+        elif arguments.command == "run":
+            print("0x%08x" % agent.run(arguments.program, command_line(arguments.arguments)))
+        elif arguments.command == "kill":
+            agent.kill(arguments.process)
+        elif arguments.command == "ls":
+            for name, attributes, size in agent.list(arguments.folder):
+                print("%s%s" % (name, "\\" if attributes & FILE_ATTRIBUTE_DIRECTORY else "  %d" % size))
+        elif arguments.command == "rm":
+            agent.path_command(COMMAND_DELETE, arguments.path)
+        elif arguments.command == "mkdir":
+            agent.path_command(COMMAND_MAKE_DIRECTORY, arguments.path)
+        elif arguments.command == "rmdir":
+            agent.path_command(COMMAND_REMOVE_DIRECTORY, arguments.path)
+        elif arguments.command == "mv":
+            agent.path_command(COMMAND_MOVE, arguments.source, arguments.destination)
+        elif arguments.command == "quit":
+            agent.request(COMMAND_QUIT)
+        elif arguments.command == "handover":
+            print("0x%08x" % agent.handover(arguments.program, command_line(arguments.arguments)))
+    except (OSError, AgentError) as error:
+        sys.exit("ce-debug: %s" % error)
