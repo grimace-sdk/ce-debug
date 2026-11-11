@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import glob
 import os
+import select
+import shutil
 import socket
 import struct
+import subprocess
 import sys
+import tempfile
+import time
 
 COMMAND_PING = 1
 COMMAND_WRITE = 2
@@ -58,6 +64,13 @@ def decode_string(data, position):
 
 DEFAULT_PORT = 2100
 SCREENSHOT_PATH = "\\debugmgr-screenshot.bmp"
+USB_DEVICE = (0x04DD, 0x9244)
+RNDIS_DEVICE = (0x045E, 0x0302)
+RNDIS_ADDRESS = "127.0.0.1:%d" % DEFAULT_PORT
+BULK_IN = 0x81
+BULK_OUT = 0x02
+SET_CONTROL_LINE_STATE = 0x22
+DTR_AND_RTS = 3
 
 
 def device_address(text):
@@ -65,15 +78,132 @@ def device_address(text):
     return host, int(port) if port else DEFAULT_PORT
 
 
+class SerialConnection:
+    def __init__(self, path, timeout):
+        import termios
+        import tty
+        self.descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
+        tty.setraw(self.descriptor)
+        attributes = termios.tcgetattr(self.descriptor)
+        attributes[2] |= termios.CLOCAL | termios.CREAD
+        termios.tcsetattr(self.descriptor, termios.TCSANOW, attributes)
+        termios.tcflush(self.descriptor, termios.TCIOFLUSH)
+        self.timeout = timeout
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def sendall(self, data):
+        view = memoryview(data)
+        while view:
+            view = view[os.write(self.descriptor, view):]
+
+    def recv(self, length):
+        ready, _, _ = select.select([self.descriptor], [], [], self.timeout)
+        if not ready:
+            raise AgentError("no reply from debugmgr")
+        return os.read(self.descriptor, length)
+
+
+def find_usb_device(vendor, product):
+    try:
+        import usb.backend.libusb1
+        import usb.core
+    except ImportError:
+        return None
+    libraries = sorted(glob.glob("/opt/homebrew/lib/libusb-1.0*.dylib") + glob.glob("/usr/local/lib/libusb-1.0*.dylib"))
+    backend = usb.backend.libusb1.get_backend(find_library=lambda name: libraries[0] if libraries else None)
+    return usb.core.find(idVendor=vendor, idProduct=product, backend=backend)
+
+
+class UsbConnection:
+    def __init__(self, vendor, product, timeout):
+        try:
+            import usb.core
+            import usb.util
+        except ImportError:
+            raise AgentError("--usb needs pyusb and libusb")
+        self.usb = usb
+        self.device = find_usb_device(vendor, product)
+        if self.device is None:
+            raise AgentError("no USB serial device %04x:%04x" % (vendor, product))
+        usb.util.claim_interface(self.device, 0)
+        self.device.ctrl_transfer(0x21, SET_CONTROL_LINE_STATE, DTR_AND_RTS, 0, None, timeout=1000)
+        self.pending = b""
+        self.timeout = timeout
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def sendall(self, data):
+        self.device.write(BULK_OUT, bytes(data), timeout=int((self.timeout or 10) * 1000))
+
+    def recv(self, length):
+        if not self.pending:
+            try:
+                self.pending = bytes(self.device.read(BULK_IN, 65536, timeout=int((self.timeout or 10) * 1000)))
+            except self.usb.core.USBTimeoutError:
+                raise AgentError("no reply from debugmgr")
+        data, self.pending = self.pending[:length], self.pending[length:]
+        return data
+
+
+def usb_id(text):
+    vendor, _, product = text.partition(":")
+    return int(vendor, 16), int(product, 16)
+
+
+def serial_ports():
+    return sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+
+
+def connect(arguments):
+    if arguments.socket:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(arguments.timeout)
+        connection.connect(arguments.socket)
+        return connection
+    if arguments.device:
+        connection = socket.create_connection(device_address(arguments.device), timeout=arguments.timeout)
+        connection.settimeout(arguments.timeout)
+        return connection
+    if arguments.serial:
+        return SerialConnection(arguments.serial, arguments.timeout)
+    if arguments.usb:
+        return UsbConnection(*usb_id(arguments.usb), arguments.timeout)
+    deadline = time.monotonic() + arguments.wait
+    while True:
+        ports = serial_ports()
+        if len(ports) == 1:
+            return SerialConnection(ports[0], arguments.timeout)
+        if find_usb_device(*USB_DEVICE) is not None:
+            return UsbConnection(*USB_DEVICE, arguments.timeout)
+        if find_usb_device(*RNDIS_DEVICE) is not None:
+            connection = socket.create_connection(device_address(RNDIS_ADDRESS), timeout=arguments.timeout)
+            connection.settimeout(arguments.timeout)
+            return connection
+        if time.monotonic() >= deadline:
+            if len(ports) > 1:
+                raise AgentError("more than one serial port, pass --serial: %s" % ", ".join(ports))
+            raise AgentError("no device: pass --device, --socket, --serial or --usb, or set CE_DEBUG_DEVICE or CE_DEBUG_SOCKET")
+        time.sleep(1)
+
+
+def save_screenshot(agent, local, remote):
+    if local.lower().endswith(".bmp"):
+        return agent.screenshot(local, remote)
+    if not shutil.which("sips"):
+        raise AgentError("saving anything but a .bmp needs sips (macOS)")
+    with tempfile.TemporaryDirectory() as directory:
+        bitmap = os.path.join(directory, "screenshot.bmp")
+        width, height, _ = agent.screenshot(bitmap, remote)
+        subprocess.run(["sips", "-s", "format", "png", bitmap, "--out", local], check=True, stdout=subprocess.DEVNULL)
+    return width, height, os.path.getsize(local)
+
+
 class Agent:
-    def __init__(self, timeout, device=None, socket_path=None):
-        if socket_path:
-            self.connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.connection.settimeout(timeout)
-            self.connection.connect(socket_path)
-        else:
-            self.connection = socket.create_connection(device_address(device), timeout=timeout)
-            self.connection.settimeout(timeout)
+    def __init__(self, connection):
+        self.connection = connection
         self.sequence = 0
         self.capacity = 256
         _, self.capacity, self.version = self.ping()
@@ -167,11 +297,15 @@ class Agent:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Talk to debugmgr.exe on a Windows CE device over TCP, or in an emulator through its agent socket")
+    parser = argparse.ArgumentParser(description="Talk to debugmgr.exe on a Windows CE device over TCP, serial or USB, or in an emulator through its agent socket")
     parser.add_argument("--device", default=os.environ.get("CE_DEBUG_DEVICE"),
                         help="the device's address, host[:port] (port %d if not given), default $CE_DEBUG_DEVICE" % DEFAULT_PORT)
     parser.add_argument("--socket", default=os.environ.get("CE_DEBUG_SOCKET"),
                         help="an emulator's --agent socket, for debugmgr on its host mailbox, default $CE_DEBUG_SOCKET")
+    parser.add_argument("--serial", default=os.environ.get("CE_DEBUG_SERIAL"), help="a serial port, default $CE_DEBUG_SERIAL")
+    parser.add_argument("--usb", nargs="?", const="%04x:%04x" % USB_DEVICE, default=None,
+                        help="a USB serial device through libusb, VID:PID (default %04x:%04x, a Sharp Brain)" % USB_DEVICE)
+    parser.add_argument("--wait", type=float, default=0, help="seconds to wait for a device to appear when none is given")
     parser.add_argument("--timeout", type=float, default=30, help="seconds to wait for each reply")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("ping", help="check debugmgr is running")
@@ -202,10 +336,8 @@ if __name__ == "__main__":
     command.add_argument("local")
     command.add_argument("--remote", default=SCREENSHOT_PATH, help="where the device writes it first, default %(default)s")
     arguments = parser.parse_args()
-    if not arguments.device and not arguments.socket:
-        sys.exit("no device: pass --device or --socket, or set CE_DEBUG_DEVICE or CE_DEBUG_SOCKET")
     try:
-        agent = Agent(arguments.timeout, device=None if arguments.socket else arguments.device, socket_path=arguments.socket)
+        agent = Agent(connect(arguments))
         if arguments.command == "ping":
             print("debugmgr protocol %d, CE %d.%02d, %d byte messages" % (agent.ping()[0], agent.version // 100, agent.version % 100, agent.capacity))
         elif arguments.command == "put":
@@ -232,6 +364,6 @@ if __name__ == "__main__":
         elif arguments.command == "handover":
             print("0x%08x" % agent.handover(arguments.program, command_line(arguments.arguments)))
         elif arguments.command == "screenshot":
-            print("%dx%d, %d bytes" % agent.screenshot(arguments.local, arguments.remote))
+            print("%dx%d, %d bytes" % save_screenshot(agent, arguments.local, arguments.remote))
     except (OSError, AgentError) as error:
         sys.exit("ce-debug: %s" % error)
