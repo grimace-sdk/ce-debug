@@ -17,6 +17,7 @@ COMMAND_REMOVE_DIRECTORY = 9
 COMMAND_MOVE = 10
 COMMAND_QUIT = 11
 COMMAND_HANDOVER = 12
+COMMAND_SCREENSHOT = 0x40
 REPLY_FLAG = 0x8000
 REPLY_HEADER_SIZE = 8
 WRITE_CREATE = 0x1
@@ -56,6 +57,7 @@ def decode_string(data, position):
 
 
 DEFAULT_PORT = 2100
+SCREENSHOT_PATH = "\\debugmgr-screenshot.bmp"
 
 
 def device_address(text):
@@ -155,6 +157,14 @@ class Agent:
     def path_command(self, command, *paths):
         self.request(command, b"".join(encode_string(ce_path(path)) for path in paths))
 
+    def screenshot(self, local, remote=SCREENSHOT_PATH):
+        width, height = struct.unpack_from("<II", self.request(COMMAND_SCREENSHOT, encode_string(ce_path(remote))))
+        try:
+            size = self.get(remote, local)
+        finally:
+            self.path_command(COMMAND_DELETE, remote)
+        return width, height, size
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Talk to debugmgr.exe on a Windows CE device over TCP, or in an emulator through its agent socket")
@@ -188,6 +198,9 @@ if __name__ == "__main__":
     command = commands.add_parser("handover", help="start another debugmgr, then stop this one")
     command.add_argument("program")
     command.add_argument("arguments", nargs=argparse.REMAINDER)
+    command = commands.add_parser("screenshot", help="save the device's screen as a .bmp on this computer")
+    command.add_argument("local")
+    command.add_argument("--remote", default=SCREENSHOT_PATH, help="where the device writes it first, default %(default)s")
     arguments = parser.parse_args()
     if not arguments.device and not arguments.socket:
         sys.exit("no device: pass --device or --socket, or set CE_DEBUG_DEVICE or CE_DEBUG_SOCKET")
@@ -218,5 +231,7 @@ if __name__ == "__main__":
             agent.request(COMMAND_QUIT)
         elif arguments.command == "handover":
             print("0x%08x" % agent.handover(arguments.program, command_line(arguments.arguments)))
+        elif arguments.command == "screenshot":
+            print("%dx%d, %d bytes" % agent.screenshot(arguments.local, arguments.remote))
     except (OSError, AgentError) as error:
         sys.exit("ce-debug: %s" % error)

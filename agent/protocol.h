@@ -26,6 +26,7 @@ enum command : uint16_t {
     command_move = 10,
     command_quit = 11,
     command_handover = 12,
+    command_screenshot = 0x40,
 };
 
 constexpr uint16_t reply_flag = 0x8000;
@@ -56,6 +57,7 @@ public:
     virtual uint32_t make_directory(const std::u16string &path) = 0;
     virtual uint32_t remove_directory(const std::u16string &path) = 0;
     virtual uint32_t move(const std::u16string &from, const std::u16string &to) = 0;
+    virtual uint32_t screenshot(const std::u16string &path, uint32_t &width, uint32_t &height) = 0;
 };
 
 struct handled {

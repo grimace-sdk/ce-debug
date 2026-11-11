@@ -177,6 +177,17 @@ public:
         return rename(source.c_str(), destination.c_str()) == 0 ? debugmgr::status_ok : windows_error(errno, source);
     }
 
+    uint32_t screenshot(const std::u16string &path, uint32_t &width, uint32_t &height) override {
+        static const uint8_t bitmap[] = {'B', 'M', 62, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, 0, 0,
+                                         0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0};
+        uint32_t status = write_file(path, 0, true, bitmap, sizeof(bitmap));
+        if (status == debugmgr::status_ok) {
+            width = 2;
+            height = 1;
+        }
+        return status;
+    }
+
 private:
     std::filesystem::path map(const std::u16string &path) const {
         std::string text = utf8(path);
@@ -212,10 +223,11 @@ void report(void *, const debugmgr::report &happened) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "usage: debugmgr-host PORT ROOT\n");
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "usage: debugmgr-host PORT ROOT [IDLE_MILLISECONDS]\n");
         return 2;
     }
     sandbox_device device{std::filesystem::path(argv[2])};
-    return debugmgr::serve(static_cast<uint16_t>(atoi(argv[1])), device, 300, report, nullptr) ? 0 : 1;
+    uint32_t idle_timeout = argc == 4 ? static_cast<uint32_t>(atoi(argv[3])) : debugmgr::idle_timeout_milliseconds;
+    return debugmgr::serve(static_cast<uint16_t>(atoi(argv[1])), device, 300, report, nullptr, idle_timeout) ? 0 : 1;
 }

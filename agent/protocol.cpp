@@ -195,6 +195,21 @@ uint32_t path_command(reader &input, uint16_t command, device &target) {
     }
 }
 
+uint32_t take_screenshot(reader &input, writer &output, device &target) {
+    std::u16string path = input.text(path_characters);
+    if (input.failed) {
+        return status_malformed;
+    }
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t status = target.screenshot(path, width, height);
+    if (status == status_ok) {
+        output.u32(width);
+        output.u32(height);
+    }
+    return status;
+}
+
 }
 
 handled handle_request(const uint8_t *request, size_t length, uint8_t *reply, size_t capacity, device &target, uint32_t windows_ce_version) {
@@ -235,6 +250,9 @@ handled handle_request(const uint8_t *request, size_t length, uint8_t *reply, si
     case command_remove_directory:
     case command_move:
         status = path_command(input, command, target);
+        break;
+    case command_screenshot:
+        status = take_screenshot(input, output, target);
         break;
     case command_quit:
         status = status_ok;
@@ -282,6 +300,8 @@ const char *command_name(uint16_t command) {
         return "QUIT";
     case command_handover:
         return "HANDOVER";
+    case command_screenshot:
+        return "SCREENSHOT";
     default:
         return "unknown";
     }

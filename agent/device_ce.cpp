@@ -6,6 +6,8 @@ namespace {
 
 constexpr DWORD kill_milliseconds = 5000;
 constexpr DWORD kill_retry_milliseconds = 50;
+constexpr WORD screenshot_bits = 24;
+constexpr DWORD bitmap_file_header_size = 14;
 
 static_assert(sizeof(wchar_t) == sizeof(char16_t), "CE paths are UTF-16");
 
@@ -20,6 +22,33 @@ uint32_t last_error() {
 
 bool process_ended(HANDLE handle) {
     return WaitForSingleObject(handle, 0) == WAIT_OBJECT_0;
+}
+
+void put_u16(uint8_t *bytes, uint16_t value) {
+    bytes[0] = static_cast<uint8_t>(value);
+    bytes[1] = static_cast<uint8_t>(value >> 8);
+}
+
+void put_u32(uint8_t *bytes, uint32_t value) {
+    put_u16(bytes, static_cast<uint16_t>(value));
+    put_u16(bytes + 2, static_cast<uint16_t>(value >> 16));
+}
+
+uint32_t write_bitmap(const std::u16string &path, const BITMAPINFOHEADER &info, const void *pixels, DWORD image_bytes) {
+    uint8_t file_header[bitmap_file_header_size] = {'B', 'M'};
+    DWORD pixel_offset = bitmap_file_header_size + sizeof(info);
+    put_u32(file_header + 2, pixel_offset + image_bytes);
+    put_u32(file_header + 10, pixel_offset);
+    HANDLE file = CreateFileW(wide(path), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return last_error();
+    }
+    DWORD written = 0;
+    bool ok = WriteFile(file, file_header, sizeof(file_header), &written, nullptr) && WriteFile(file, &info, sizeof(info), &written, nullptr) &&
+              WriteFile(file, pixels, image_bytes, &written, nullptr) && written == image_bytes;
+    uint32_t status = ok ? status_ok : last_error();
+    CloseHandle(file);
+    return status;
 }
 
 }
@@ -169,6 +198,37 @@ uint32_t ce_device::remove_directory(const std::u16string &path) {
 
 uint32_t ce_device::move(const std::u16string &from, const std::u16string &to) {
     return MoveFileW(wide(from), wide(to)) ? status_ok : last_error();
+}
+
+uint32_t ce_device::screenshot(const std::u16string &path, uint32_t &width, uint32_t &height) {
+    width = static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN));
+    height = static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN));
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = static_cast<LONG>(width);
+    info.bmiHeader.biHeight = static_cast<LONG>(height);
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = screenshot_bits;
+    info.bmiHeader.biCompression = BI_RGB;
+    DWORD image_bytes = (width * 3 + 3) / 4 * 4 * height;
+    info.bmiHeader.biSizeImage = image_bytes;
+    HDC screen = GetDC(nullptr);
+    HDC memory = CreateCompatibleDC(screen);
+    void *pixels = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    uint32_t status = ERROR_OUTOFMEMORY;
+    if (bitmap && pixels) {
+        HGDIOBJ previous = SelectObject(memory, bitmap);
+        BitBlt(memory, 0, 0, static_cast<int>(width), static_cast<int>(height), screen, 0, 0, SRCCOPY);
+        SelectObject(memory, previous);
+        status = write_bitmap(path, info.bmiHeader, pixels, image_bytes);
+    }
+    if (bitmap) {
+        DeleteObject(bitmap);
+    }
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return status;
 }
 
 }

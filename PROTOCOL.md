@@ -2,9 +2,10 @@
 
 debugmgr reads requests and sends one reply to each. On CE 3.0 (`debugmgr/*.cpp`) it uses one of two transports:
 
-- TCP, by default: it listens on port 2100 (or the port given on its command line) and serves one connection at a time. Each
-  message is framed as a u32 little-endian length followed by the message. A request longer than the maximum message size closes
-  the connection.
+- TCP, by default: it listens on port 2100 (or the port given on its command line) and serves one connection at a time. A new
+  connection replaces the current one, and one with no request for 120 seconds is closed. If the port is in use, it retries every
+  second. Each message is framed as a u32 little-endian length followed by the message. A request longer than the maximum message
+  size closes the connection.
 - An emulator's host mailbox, when the command line contains `mailbox` or the registry value `HKLM\Software\debugmgr\Transport`
   is the string `mailbox`. debugmgr calls the emulator with `swi 0x0051CE` in ARM state: r0 = operation (0 probe, 1 receive,
   2 send), r1 = buffer, r2 = length; the result is in r0, and probe also returns the maximum message size in r1. Receive returns
@@ -52,6 +53,7 @@ Clients use sequences 0x0001 to 0x7FFF. 0x8000 to 0xFFFF are kept for a debugger
 | 10 | MOVE | string from, string to | none |
 | 11 | QUIT | none | none, then debugmgr exits |
 | 12 | HANDOVER | as RUN | as RUN, then debugmgr exits |
+| 0x40 | SCREENSHOT | string path | u32 width, u32 height |
 
 WRITE flag 0x1 creates the file, or truncates it if it exists. Without it the file must exist. Data is written at offset.
 
@@ -65,6 +67,8 @@ handle reads as signalled while the program is still running, so debugmgr can't 
 of a program that has already exited also returns 0. On CE 2.0, KILL waits up to 5 seconds for the program to end.
 
 LIST stops early if the reply would exceed the maximum message size.
+
+SCREENSHOT writes the screen to path as a bottom-up 24-bit BMP. Fetch it with READ and remove it with DELETE.
 
 This is grimace's debugmgr protocol, version 1.
 

@@ -30,12 +30,12 @@ constexpr DWORD idle_milliseconds = 10;
 bool serve_mailbox(device &target, uint32_t windows_ce_version, reporter notify, void *context) {
     int capacity = 0;
     if (host_call(host_probe, nullptr, 0, &capacity) < 1 || capacity < minimum_capacity) {
-        notify(context, {event::listen_failed, 0, 0, 0});
+        notify(context, {event::listen_failed, 0, 0, 0, 0, 0});
         return false;
     }
     std::unique_ptr<uint8_t[]> request(new uint8_t[capacity]);
     std::unique_ptr<uint8_t[]> reply(new uint8_t[capacity]);
-    notify(context, {event::listening, 0, 0, 0});
+    notify(context, {event::listening, 0, 0, 0, 0, 0});
     for (;;) {
         int length = host_call(host_receive, request.get(), capacity, nullptr);
         if (length <= 0) {
@@ -48,7 +48,8 @@ bool serve_mailbox(device &target, uint32_t windows_ce_version, reporter notify,
             continue;
         }
         host_call(host_send, reply.get(), static_cast<int>(result.reply_length), nullptr);
-        notify(context, {event::request, 0, result.command, result.status});
+        notify(context, {event::request, 0, result.command, result.status, static_cast<uint32_t>(length),
+                         static_cast<uint32_t>(result.reply_length)});
         if (!result.keep_running) {
             return true;
         }

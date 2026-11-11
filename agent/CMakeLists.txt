@@ -4,7 +4,8 @@ project(debugmgr C CXX)
 include(Grimace)
 
 if(GRIMACE_WIN32_WCE GREATER_EQUAL 300)
-    grimace_add_executable(debugmgr main.cpp protocol.cpp server.cpp mailbox.cpp device_ce.cpp)
+    grimace_add_executable(debugmgr main.cpp status_window.cpp protocol.cpp server.cpp mailbox.cpp device_ce.cpp
+        RESOURCES debugmgr.rc ../assets/debugmgr.ico ../assets/tray-idle.ico ../assets/tray-connected.ico ../assets/tray-active.ico)
     target_link_libraries(debugmgr PRIVATE grimace::winsock)
 elseif(GRIMACE_ARCH STREQUAL "x86")
     message(FATAL_ERROR "debugmgr has no x86 build: below CE 3.0 it only talks to an emulator's host mailbox, which has no x86 call")

@@ -20,6 +20,7 @@ public:
     uint32_t make_directory(const std::u16string &path) override;
     uint32_t remove_directory(const std::u16string &path) override;
     uint32_t move(const std::u16string &from, const std::u16string &to) override;
+    uint32_t screenshot(const std::u16string &path, uint32_t &width, uint32_t &height) override;
 
 private:
     uint32_t kill_other(uint32_t process);

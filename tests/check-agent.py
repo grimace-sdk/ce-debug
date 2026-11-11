@@ -15,6 +15,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST_PROGRAM = os.path.join(ROOT, "build", "debugmgr-host", "debugmgr-host")
 TOOL = os.path.join(ROOT, "client", "ce-debug")
+IDLE_MILLISECONDS = 3000
 
 
 def build():
@@ -131,6 +132,23 @@ def run(checker, port, sandbox, work):
     output = checker.tool("ping")
     checker.expect("protocol 1" in output, "ping after an oversized request: %r" % output)
 
+    shot = os.path.join(work, "screen.bmp")
+    output = checker.tool("screenshot", shot)
+    checker.expect(output.strip() == "2x1, 62 bytes" and open(shot, "rb").read(2) == b"BM", "screenshot: %r" % output)
+    checker.expect(not os.path.exists(os.path.join(sandbox, "debugmgr-screenshot.bmp")), "screenshot left its file on the device")
+
+    first = socket.create_connection(("127.0.0.1", port), timeout=10)
+    output = checker.tool("ping")
+    checker.expect("protocol 1" in output, "ping while another client is connected: %r" % output)
+    checker.expect(first.recv(4) == b"", "a new connection should close the previous one")
+    first.close()
+
+    idle = socket.create_connection(("127.0.0.1", port), timeout=IDLE_MILLISECONDS / 1000 + 5)
+    started = time.time()
+    checker.expect(idle.recv(4) == b"" and time.time() - started >= IDLE_MILLISECONDS / 1000 - 0.5,
+                   "an idle connection should close after %d ms" % IDLE_MILLISECONDS)
+    idle.close()
+
     checker.tool("quit")
 
 
@@ -138,7 +156,7 @@ def main():
     build()
     port = free_port()
     with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as work:
-        server = subprocess.Popen([HOST_PROGRAM, str(port), sandbox], stderr=subprocess.PIPE, text=True)
+        server = subprocess.Popen([HOST_PROGRAM, str(port), sandbox, str(IDLE_MILLISECONDS)], stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.time() + 10
             while time.time() < deadline:

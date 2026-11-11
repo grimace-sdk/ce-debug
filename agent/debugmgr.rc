@@ -1,0 +1,5 @@
+1 ICON "../assets/debugmgr.ico"
+2 ICON "../assets/tray-idle.ico"
+3 ICON "../assets/tray-connected.ico"
+4 ICON "../assets/tray-active.ico"
+HI_RES_AWARE CEUX { 1 }
