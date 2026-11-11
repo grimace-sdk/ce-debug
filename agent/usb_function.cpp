@@ -308,10 +308,14 @@ bool serve_usb(usb_session &session, device &target, uint32_t windows_ce_version
     current_device = &target;
     current_version = windows_ce_version;
     usb_mode mode = session.mode;
+    wchar_t client[64] = L"";
+    bool client_known = usb_current_client(client, 64);
     if (mode == usb_mode::automatic) {
-        mode = current_client_is(USB_RNDIS_CLIENT) ? usb_mode::rndis : usb_mode::sharp_serial;
+        mode = client_known && !lstrcmpiW(client, USB_RNDIS_CLIENT) ? usb_mode::rndis : usb_mode::sharp_serial;
     }
-    append_log(L"debugmgr starting");
+    append_log(grimace::format<160>(L"debugmgr starting: requested mode %d, USB client %s, using mode %d", static_cast<int>(session.mode),
+                                    client_known ? client : L"unknown", static_cast<int>(mode))
+                   .c_str());
     start_thread(power_thread);
     if (mode == usb_mode::cdc_serial) {
         start_thread(event_thread);

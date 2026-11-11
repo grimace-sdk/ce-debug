@@ -203,7 +203,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPWSTR command_line, 
     }
 #ifdef GRIMACE_PLATFORM_BRAIN
     if (!chosen.chosen) {
-        chosen.usb = debugmgr::usb_mode::sharp_serial;
+        chosen.usb = debugmgr::usb_mode::rndis;
     }
 #endif
 

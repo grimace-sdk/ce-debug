@@ -52,9 +52,9 @@ On Windows Mobile 5 and later, unsigned programs may show an unknown publisher p
 
 On the Brain debugmgr switches its USB port away from mass storage, and Stop switches it back.
 
-- `usb` (the default): Sharp's USB serial client, `04dd:9244`. Its driver, Microsoft's `serialusbfn.dll`, is only in Sharp's updater image, so the card must supply it in `\Windows`.
+- `usb`: Sharp's USB serial client, `04dd:9244`. Its driver, Microsoft's `serialusbfn.dll`, is only in Sharp's updater image, so the card must supply it in `\Windows`.
 - `cdc`: `usbserial.dll` from this repository, beside `debugmgr.exe`.
-- `rndis`: networking over USB, for brain-net on a Mac or a Brainwave module. It needs `rndisfn.dll` in `\Windows`, which isn't included. With no connection after 2 minutes it falls back to `usb`. After a resume it switches USB back to networking.
+- `rndis` (the default): networking over USB, for brain-net on a Mac or a Brainwave module. It needs `rndisfn.dll` in `\Windows`, which isn't included. With no connection after 2 minutes it falls back to `usb`. After a resume it switches USB back to networking.
 - `auto`: `rndis` if USB networking is already on, otherwise `usb`.
 
 macOS binds no driver to `04dd:9244`, so the client reaches it through libusb. `usbctl.exe` switches the USB function by hand: `cdc`, `msc`, or nothing for its status.
