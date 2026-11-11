@@ -110,6 +110,10 @@ public:
         return debugmgr::status_ok;
     }
 
+    std::u16string own_program() override {
+        return u"\\debugmgr.exe";
+    }
+
     uint32_t run(const std::u16string &program, const std::u16string &arguments, uint32_t &process) override {
         std::filesystem::path local = map(program);
         if (!std::filesystem::is_regular_file(local)) {

@@ -38,7 +38,7 @@ client/ce-debug ls "/Storage Card"
 client/ce-debug screenshot screen.png
 ```
 
-The client also has `get`, `kill`, `rm`, `mkdir`, `rmdir`, `mv`, `quit` and `handover`. `screenshot` saves a `.bmp`, or a `.png` on macOS.
+The client also has `get`, `kill`, `rm`, `mkdir`, `rmdir`, `mv`, `quit` and `handover`; `handover "" rndis` restarts debugmgr with new arguments, wherever it's installed. `screenshot` saves a `.bmp`, or a `.png` on macOS.
 
 Choose the device with `--device HOST[:PORT]` (or `CE_DEBUG_DEVICE`), `--serial PORT` (or `CE_DEBUG_SERIAL`), `--usb [VID:PID]` or `--socket PATH` (or `CE_DEBUG_SOCKET`) for an emulator's agent socket. With none, it uses the only `/dev/cu.usbmodem*` or `/dev/ttyACM*` port, a Sharp Brain on USB, or a Brain's USB network through brain-net on port 2100. `--wait SECONDS` waits for one to appear. `--usb` needs `pip install pyusb` and libusb.
 

@@ -51,6 +51,7 @@ public:
     virtual uint32_t read_file(const std::u16string &path, uint32_t offset, uint8_t *buffer, size_t capacity, uint32_t &file_size,
                                size_t &read) = 0;
     virtual uint32_t run(const std::u16string &program, const std::u16string &arguments, uint32_t &process) = 0;
+    virtual std::u16string own_program() = 0;
     virtual uint32_t kill(uint32_t process) = 0;
     virtual uint32_t list(const std::u16string &pattern, std::vector<directory_entry> &entries) = 0;
     virtual uint32_t delete_file(const std::u16string &path) = 0;

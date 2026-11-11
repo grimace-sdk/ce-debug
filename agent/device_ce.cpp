@@ -131,6 +131,12 @@ uint32_t ce_device::run(const std::u16string &program, const std::u16string &arg
     return status_ok;
 }
 
+std::u16string ce_device::own_program() {
+    wchar_t path[MAX_PATH];
+    DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    return std::u16string(reinterpret_cast<const char16_t *>(path), length);
+}
+
 uint32_t ce_device::kill_other(uint32_t process) {
     HANDLE handle = OpenProcess(0, FALSE, process);
     if (!handle) {

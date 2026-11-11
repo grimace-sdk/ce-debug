@@ -16,6 +16,7 @@ public:
     uint32_t read_file(const std::u16string &path, uint32_t offset, uint8_t *buffer, size_t capacity, uint32_t &file_size,
                        size_t &read) override;
     uint32_t run(const std::u16string &program, const std::u16string &arguments, uint32_t &process) override;
+    std::u16string own_program() override;
     uint32_t kill(uint32_t process) override;
     uint32_t list(const std::u16string &pattern, std::vector<directory_entry> &entries) override;
     uint32_t delete_file(const std::u16string &path) override;

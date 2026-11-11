@@ -132,11 +132,14 @@ uint32_t read_file(reader &input, writer &output, device &target) {
     return status_ok;
 }
 
-uint32_t run_program(reader &input, writer &output, device &target) {
+uint32_t run_program(reader &input, writer &output, device &target, bool handover) {
     std::u16string program = input.text(path_characters);
     std::u16string arguments = input.text(argument_characters);
     if (input.failed) {
         return status_malformed;
+    }
+    if (handover && program.empty()) {
+        program = target.own_program();
     }
     uint32_t process = 0;
     uint32_t status = target.run(program, arguments, process);
@@ -234,8 +237,10 @@ handled handle_request(const uint8_t *request, size_t length, uint8_t *reply, si
         status = read_file(input, output, target);
         break;
     case command_run:
+        status = run_program(input, output, target, false);
+        break;
     case command_handover:
-        status = run_program(input, output, target);
+        status = run_program(input, output, target, true);
         break;
     case command_kill: {
         uint32_t process = input.u32();

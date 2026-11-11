@@ -149,7 +149,11 @@ def run(checker, port, sandbox, work):
                    "an idle connection should close after %d ms" % IDLE_MILLISECONDS)
     idle.close()
 
-    checker.tool("quit")
+    open(os.path.join(sandbox, "debugmgr.exe"), "wb").close()
+    output = checker.tool("handover", "", "rndis")
+    checker.expect(output.strip().startswith("0x"), "handover to itself: %r" % output)
+    recorded = open(os.path.join(sandbox, "last-arguments.txt")).read()
+    checker.expect(recorded == "rndis", "handover arguments: %r" % recorded)
 
 
 def main():
@@ -169,9 +173,9 @@ def main():
             run(checker, port, sandbox, work)
             try:
                 exit_code = server.wait(timeout=10)
-                checker.expect(exit_code == 0, "debugmgr-host exited with %d after QUIT" % exit_code)
+                checker.expect(exit_code == 0, "debugmgr-host exited with %d after HANDOVER" % exit_code)
             except subprocess.TimeoutExpired:
-                checker.expect(False, "debugmgr-host still running after QUIT")
+                checker.expect(False, "debugmgr-host still running after HANDOVER")
         finally:
             if server.poll() is None:
                 server.kill()

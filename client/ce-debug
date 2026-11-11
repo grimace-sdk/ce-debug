@@ -262,7 +262,7 @@ class Agent:
         return len(data)
 
     def run(self, program, arguments, command=COMMAND_RUN):
-        reply = self.request(command, encode_string(ce_path(program)) + encode_string(arguments))
+        reply = self.request(command, encode_string(ce_path(program) if program else "") + encode_string(arguments))
         return struct.unpack_from("<I", reply)[0]
 
     def handover(self, program, arguments=""):
@@ -330,7 +330,7 @@ if __name__ == "__main__":
     command.add_argument("destination")
     commands.add_parser("quit", help="stop debugmgr")
     command = commands.add_parser("handover", help="start another debugmgr, then stop this one")
-    command.add_argument("program")
+    command.add_argument("program", help="program to start, or \"\" to restart this debugmgr")
     command.add_argument("arguments", nargs=argparse.REMAINDER)
     command = commands.add_parser("screenshot", help="save the device's screen as a .bmp on this computer")
     command.add_argument("local")
