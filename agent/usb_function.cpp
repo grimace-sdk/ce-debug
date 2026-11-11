@@ -356,7 +356,9 @@ bool serve_usb(usb_session &session, device &target, uint32_t windows_ce_version
 }
 
 void usb_stopped(const status_snapshot &final_state) {
-    if (final_state.stop_restores_storage) {
+    if (final_state.last_command == command_handover) {
+        append_log(L"handed over, leaving USB as it was");
+    } else if (final_state.stop_restores_storage) {
         append_log(L"stopped, restoring mass storage");
         usb_select_client(USB_MASS_STORAGE_CLIENT);
     } else {
